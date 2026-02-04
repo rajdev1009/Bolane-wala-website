@@ -33,13 +33,13 @@ with st.sidebar:
     else:
         hf_token = st.text_input("Hugging Face Token", type="password")
 
-    # --- FINAL WORKING MODEL LIST ---
+    # --- MODEL LIST ---
     model_id = st.selectbox(
         "Choose Model",
         [
-            "Qwen/Qwen2.5-72B-Instruct",       # Best & Working 100%
-            "microsoft/Phi-3.5-mini-instruct", # Backup Option 1
-            "google/gemma-2-2b-it"             # Backup Option 2
+            "Qwen/Qwen2.5-72B-Instruct",       # Best Choice
+            "microsoft/Phi-3.5-mini-instruct", # Fast Backup
+            "google/gemma-2-2b-it"             # Simple Backup
         ]
     )
     
@@ -87,13 +87,16 @@ if prompt := st.chat_input("Message type karein..."):
             history_messages = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
             history_for_api = [system_instruction] + history_messages
 
-            # Note: Qwen aur Phi models 'chat_completion' ke sath perfectly kaam karte hain
             stream = client.chat_completion(messages=history_for_api, max_tokens=400, stream=True)
             
+            # --- FIX IS HERE (Updated Loop) ---
             for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    full_response += chunk.choices[0].delta.content
-                    message_placeholder.markdown(full_response + "▌")
+                # Hum check kar rahe hain ki 'choices' khali to nahi hai
+                if chunk.choices and len(chunk.choices) > 0:
+                    new_content = chunk.choices[0].delta.content
+                    if new_content:
+                        full_response += new_content
+                        message_placeholder.markdown(full_response + "▌")
             
             message_placeholder.markdown(full_response)
 
@@ -119,5 +122,4 @@ if prompt := st.chat_input("Message type karein..."):
 
         except Exception as e:
             st.error(f"Error: {e}")
-            st.warning("Tip: Agar Qwen model error de, to list me se 'Microsoft Phi' select karke try karein.")
             
