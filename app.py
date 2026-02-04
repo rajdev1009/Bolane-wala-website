@@ -13,9 +13,6 @@ st.caption("Auto-Reply with Voice! 🔊")
 
 # --- Function for Auto-Play Audio ---
 def autoplay_audio(audio_bytes):
-    """
-    Ye function audio ko turant play kar dega bina button dabaye.
-    """
     b64 = base64.b64encode(audio_bytes).decode()
     md = f"""
         <audio controls autoplay>
@@ -36,13 +33,16 @@ with st.sidebar:
     else:
         hf_token = st.text_input("Hugging Face Token", type="password")
 
-    # Model Selection
+    # --- UPDATED MODEL LIST (YE WALA CHANGE KIYA HAI) ---
     model_id = st.selectbox(
         "Choose Model",
-        ["HuggingFaceH4/zephyr-7b-beta", "mistralai/Mistral-7B-Instruct-v0.2"]
+        [
+            "mistralai/Mistral-7B-Instruct-v0.3",  # Ye abhi sabse stable hai
+            "google/gemma-2-9b-it",                # Ye bhi free me available hai
+            "microsoft/Phi-3-mini-4k-instruct"     # Fast and Free
+        ]
     )
     
-    # Language
     voice_lang = st.selectbox("Voice Language", ["en", "hi"], index=0)
     
     if st.button("Clear Chat"):
@@ -56,7 +56,6 @@ if "messages" not in st.session_state:
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.write(message["content"])
-        # History me hum player dikhayenge, par auto-play nahi (sirf naye message pe auto-play hoga)
         if "audio" in message:
             st.audio(message["audio"], format='audio/mp3')
 
@@ -80,17 +79,14 @@ if prompt := st.chat_input("Message type karein..."):
         try:
             client = InferenceClient(model=model_id, token=hf_token)
             
-            # System Instruction
             system_instruction = {
                 "role": "system", 
                 "content": "You are a helpful AI assistant. Keep answers short and natural."
             }
             
-            # Context preparation
             history_messages = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
             history_for_api = [system_instruction] + history_messages
 
-            # Generate Text
             stream = client.chat_completion(messages=history_for_api, max_tokens=400, stream=True)
             
             for chunk in stream:
@@ -108,8 +104,6 @@ if prompt := st.chat_input("Message type karein..."):
                     audio_fp = io.BytesIO()
                     tts.write_to_fp(audio_fp)
                     audio_data = audio_fp.getvalue()
-                    
-                    # Yaha humne custom function call kiya jo AUTOMATIC play karega
                     autoplay_audio(audio_data)
                     
                 except Exception as e:
@@ -123,4 +117,7 @@ if prompt := st.chat_input("Message type karein..."):
             st.session_state.messages.append(msg_obj)
 
         except Exception as e:
+            # Agar Model Error aaye to saaf dikhana
             st.error(f"Error: {e}")
+            st.warning("Tip: Try selecting a different model from the sidebar.")
+            
