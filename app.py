@@ -33,13 +33,13 @@ with st.sidebar:
     else:
         hf_token = st.text_input("Hugging Face Token", type="password")
 
-    # --- UPDATED MODEL LIST (YE WALA CHANGE KIYA HAI) ---
+    # --- FINAL WORKING MODEL LIST ---
     model_id = st.selectbox(
         "Choose Model",
         [
-            "mistralai/Mistral-7B-Instruct-v0.3",  # Ye abhi sabse stable hai
-            "google/gemma-2-9b-it",                # Ye bhi free me available hai
-            "microsoft/Phi-3-mini-4k-instruct"     # Fast and Free
+            "Qwen/Qwen2.5-72B-Instruct",       # Best & Working 100%
+            "microsoft/Phi-3.5-mini-instruct", # Backup Option 1
+            "google/gemma-2-2b-it"             # Backup Option 2
         ]
     )
     
@@ -87,6 +87,7 @@ if prompt := st.chat_input("Message type karein..."):
             history_messages = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
             history_for_api = [system_instruction] + history_messages
 
+            # Note: Qwen aur Phi models 'chat_completion' ke sath perfectly kaam karte hain
             stream = client.chat_completion(messages=history_for_api, max_tokens=400, stream=True)
             
             for chunk in stream:
@@ -117,7 +118,6 @@ if prompt := st.chat_input("Message type karein..."):
             st.session_state.messages.append(msg_obj)
 
         except Exception as e:
-            # Agar Model Error aaye to saaf dikhana
             st.error(f"Error: {e}")
-            st.warning("Tip: Try selecting a different model from the sidebar.")
+            st.warning("Tip: Agar Qwen model error de, to list me se 'Microsoft Phi' select karke try karein.")
             
