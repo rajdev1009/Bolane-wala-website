@@ -1,50 +1,55 @@
 import streamlit as st
 import os
 import base64
+import asyncio
+import math
+import io
 from huggingface_hub import InferenceClient
 from gtts import gTTS
-import io
-import difflib  # Matching ke liye
+from telethon import TelegramClient
+from dotenv import load_dotenv
 
-# --- IMPORT DATABASE ---
-# Agar movies_db.py file nahi milti to error na aaye, isliye try-except
+# --- 1. SETUP & SECURITY ---
+load_dotenv()
+
+# Environment Variables Check
 try:
-    from movies_db import data as movie_database
-except ImportError:
-    movie_database = {}  # Empty agar file na ho
+    HF_TOKEN = os.getenv("HF_TOKEN")
+    
+    # Telegram Keys
+    tg_api_id = os.getenv("TELEGRAM_API_ID")
+    API_ID = int(tg_api_id) if tg_api_id else None
+    
+    API_HASH = os.getenv("TELEGRAM_API_HASH")
+    
+    # Channel ID
+    ch_id = os.getenv("CHANNEL_ID")
+    CHANNEL_ID = int(ch_id) if ch_id else None
+    
+    # Bot Token
+    TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 
-# --- CONFIGURATION ---
-OWNER_NAME = "Rajdev"
-LOCATION = "Lumding, Assam"
-MAIN_CHANNEL_LINK = "https://t.me/+u4cmm3JmIrFlNzZl" 
+    # --- OWNER IDENTITY UPDATED ---
+    OWNER_NAME = os.getenv("OWNER_NAME", "Rajdev") 
+    LOCATION = "Lumding, Assam"
+    
+except Exception:
+    pass 
 
 # --- Page Config ---
 st.set_page_config(page_title="AstraToonix", page_icon="🤖")
+st.title("🤖 AstraToonix AI")
+st.caption(f"Assistant of {OWNER_NAME} | {LOCATION}")
 
-st.title("🤖 AstraToonix")
-st.caption(f"Created by {OWNER_NAME}")
+# --- 2. HELPER FUNCTIONS ---
+def convert_size(size_bytes):
+    if size_bytes == 0: return "0B"
+    size_name = ("B", "KB", "MB", "GB", "TB")
+    i = int(math.floor(math.log(size_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 2)
+    return "%s %s" % (s, size_name[i])
 
-# --- Helper: Search Movie Function ---
-def find_movie_link(user_query):
-    # User ki query ko lowercase karein
-    query_lower = user_query.lower()
-    
-    # 1. Direct check
-    for movie_name, link in movie_database.items():
-        if movie_name in query_lower:
-            return movie_name, link
-            
-    # 2. Fuzzy match (Agar spelling thodi galat ho)
-    # Sirf tab check karein agar database me kuch ho
-    if movie_database:
-        matches = difflib.get_close_matches(query_lower, movie_database.keys(), n=1, cutoff=0.6)
-        if matches:
-            found_name = matches[0]
-            return found_name, movie_database[found_name]
-            
-    return None, None
-
-# --- Audio Function ---
 def autoplay_audio(audio_bytes):
     b64 = base64.b64encode(audio_bytes).decode()
     md = f"""
@@ -54,22 +59,53 @@ def autoplay_audio(audio_bytes):
         """
     st.markdown(md, unsafe_allow_html=True)
 
-# --- Sidebar ---
-with st.sidebar:
-    st.header("⚙️ Settings")
-    env_token = os.getenv("HF_TOKEN")
-    if env_token:
-        hf_token = env_token
-        st.success("System Token Loaded! ✅")
-    else:
-        hf_token = st.text_input("Hugging Face Token", type="password")
+# --- 3. SEARCH ENGINE ---
+async def search_telegram_channel(query):
+    # Agar Hi/Hello hai to search mat karo time bachao
+    if query.lower() in ['hi', 'hello', 'hey', 'namaste', 'kaise ho']:
+        return None
 
-    model_id = st.selectbox("Choose Model", ["Qwen/Qwen2.5-72B-Instruct", "microsoft/Phi-3.5-mini-instruct"])
-    voice_lang = st.selectbox("Voice Language", ["hi", "en"], index=0)
-    if st.button("Clear Chat"):
-        st.session_state.messages = []
+    if not API_ID or not API_HASH or not CHANNEL_ID or not TG_BOT_TOKEN:
+        return "CONFIG_ERROR"
 
-# --- Chat Logic ---
+    try:
+        client = TelegramClient('bot_session_final', API_ID, API_HASH)
+        await client.start(bot_token=TG_BOT_TOKEN)
+        
+        result_data = None
+        async for message in client.iter_messages(CHANNEL_ID, search=query, limit=1):
+            clean_id = str(CHANNEL_ID).replace("-100", "")
+            msg_link = f"https://t.me/c/{clean_id}/{message.id}"
+            upload_date = message.date.strftime("%d %B %Y")
+            caption = message.text[:200] + "..." if message.text else "No Description"
+            
+            file_size = "Unknown"
+            file_ext = "Link"
+            if message.file:
+                file_size = convert_size(message.file.size)
+                file_ext = message.file.ext if message.file.ext else ".mp4"
+                
+            result_data = {
+                "found": True,
+                "link": msg_link,
+                "date": upload_date,
+                "size": file_size,
+                "format": file_ext,
+                "caption": caption
+            }
+            break 
+            
+        await client.disconnect()
+        return result_data
+    except Exception:
+        return None
+
+def get_movie_data(query):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return loop.run_until_complete(search_telegram_channel(query))
+
+# --- 4. CHAT LOGIC ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -79,11 +115,8 @@ for message in st.session_state.messages:
         if "audio" in message:
             st.audio(message["audio"], format='audio/mp3')
 
-if prompt := st.chat_input("Message type karein..."):
-    if not hf_token:
-        st.error("Token missing!")
-        st.stop()
-
+if prompt := st.chat_input("Type a message..."):
+    
     with st.chat_message("user"):
         st.write(prompt)
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -92,39 +125,56 @@ if prompt := st.chat_input("Message type karein..."):
         message_placeholder = st.empty()
         full_response = ""
         
-        # --- SMART CHECK: Database Search ---
-        found_movie, found_link = find_movie_link(prompt)
+        # Search Run karna
+        search_result = get_movie_data(prompt)
         
-        # System Prompt ko Dynamic banate hain
-        if found_movie:
-            # Agar movie mil gayi database mein
-            system_prompt_text = f"""
-            You are AstraToonix. The user asked for '{prompt}'.
-            We FOUND the movie '{found_movie}' in our database.
+        # --- IDENTITY & GREETING LOGIC ---
+        system_prompt = f"""
+        You are AstraToonix, a helpful AI assistant.
+        
+        KEY IDENTITY RULES:
+        1. OWNER: Your creator is '{OWNER_NAME}' (Rajdev).
+        2. LOCATION: You and your owner are from '{LOCATION}'.
+        3. GREETING RULE: If the user says "Hi", "Hello", "Namaste" or similar -> You MUST reply EXACTLY with:
+           "Namaste! Main {OWNER_NAME} ka assistant hoon. Bataiye main aapki kaise madad kar sakta hoon?"
+        
+        CONTEXT:
+        """
+
+        if search_result == "CONFIG_ERROR":
+            system_prompt += "\nDatabase Error: API Keys missing. Chat normally."
             
-            YOUR TASK:
-            1. Tell the user "Haan, {found_movie} hamare paas available hai!"
-            2. Provide this EXACT link: {found_link}
-            3. Say "Click the link above to watch directly."
-            4. Keep it short.
+        elif search_result and search_result.get("found"):
+            system_prompt += f"""
+            User asked for '{prompt}'.
+            MOVIE FOUND IN DATABASE:
+            - Link: {search_result['link']}
+            - Size: {search_result['size']}
+            - Date: {search_result['date']}
+            
+            TASK: Inform user clearly. Give details and Link.
             """
         else:
-            # Agar movie database mein nahi hai
-            system_prompt_text = f"""
-            You are AstraToonix created by {OWNER_NAME}.
-            User message: '{prompt}'
-            
-            RULES:
-            1. If user is asking for a movie/series, say: "Filhal ye specific link database me nahi hai, par aap hamare main channel par search kar sakte hain." and give this link: {MAIN_CHANNEL_LINK}
-            2. If user asks general questions (Who are you?), answer as AstraToonix (Creator: {OWNER_NAME}, from {LOCATION}).
-            3. FOR CODING: Write full detailed code.
+            system_prompt += f"""
+            User said: '{prompt}'.
+            - If it's a Greeting: Use the 'GREETING RULE' above.
+            - If asking for Code: Write full detailed code (upto 3000 tokens).
+            - If asking for Movie: Apologize politely, say "Currently not available in channel".
+            - If asking 'Who are you/Owner': Answer "{OWNER_NAME} from {LOCATION}".
             """
 
         try:
-            client = InferenceClient(model=model_id, token=hf_token)
-            history_for_api = [{"role": "system", "content": system_prompt_text}] + [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages if "audio" not in m]
+            if not HF_TOKEN:
+                st.error("Hugging Face Token Missing!")
+                st.stop()
 
-            stream = client.chat_completion(messages=history_for_api, max_tokens=3000, stream=True)
+            client = InferenceClient(model="Qwen/Qwen2.5-72B-Instruct", token=HF_TOKEN)
+            
+            stream = client.chat_completion(
+                messages=[{"role": "system", "content": system_prompt}] + [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
+                max_tokens=3000, 
+                stream=True
+            )
             
             for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
@@ -132,22 +182,18 @@ if prompt := st.chat_input("Message type karein..."):
                     message_placeholder.markdown(full_response + "▌")
             
             message_placeholder.markdown(full_response)
-
-            # Audio Logic
-            audio_data = None
-            if full_response.strip() and len(full_response) < 1000:
+            
+            # Voice Logic (Sirf chote messages ke liye)
+            if len(full_response) < 600:
                 try:
-                    tts = gTTS(text=full_response, lang=voice_lang, slow=False)
+                    tts = gTTS(text=full_response, lang="hi", slow=False)
                     audio_fp = io.BytesIO()
                     tts.write_to_fp(audio_fp)
-                    audio_data = audio_fp.getvalue()
-                    autoplay_audio(audio_data)
+                    autoplay_audio(audio_fp.getvalue())
                 except: pass
 
-            msg_obj = {"role": "assistant", "content": full_response}
-            if audio_data: msg_obj["audio"] = audio_data
-            st.session_state.messages.append(msg_obj)
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"AI Error: {e}")
             
