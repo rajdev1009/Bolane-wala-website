@@ -1,5 +1,4 @@
 streamlit
-huggingface_hub
-gTTS
+huggingface_hub>=0.20.0
 telethon
 python-dotenv
