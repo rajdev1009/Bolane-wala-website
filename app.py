@@ -5,7 +5,6 @@ import asyncio
 import math
 import io
 from huggingface_hub import InferenceClient
-from gtts import gTTS
 from telethon import TelegramClient
 from dotenv import load_dotenv
 
@@ -29,7 +28,7 @@ try:
     # Bot Token
     TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 
-    # --- OWNER IDENTITY UPDATED ---
+    # Identity
     OWNER_NAME = os.getenv("OWNER_NAME", "Rajdev") 
     LOCATION = "Lumding, Assam"
     
@@ -54,22 +53,22 @@ def autoplay_audio(audio_bytes):
     b64 = base64.b64encode(audio_bytes).decode()
     md = f"""
         <audio controls autoplay>
-        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+        <source src="data:audio/wav;base64,{b64}" type="audio/wav">
         </audio>
         """
     st.markdown(md, unsafe_allow_html=True)
 
 # --- 3. SEARCH ENGINE ---
 async def search_telegram_channel(query):
-    # Agar Hi/Hello hai to search mat karo time bachao
-    if query.lower() in ['hi', 'hello', 'hey', 'namaste', 'kaise ho']:
+    # Greeting detection logic handled in chat loop to save API calls
+    if query.lower().strip() in ['hi', 'hello', 'hey', 'namaste', 'kaise ho']:
         return None
 
     if not API_ID or not API_HASH or not CHANNEL_ID or not TG_BOT_TOKEN:
         return "CONFIG_ERROR"
 
     try:
-        client = TelegramClient('bot_session_final', API_ID, API_HASH)
+        client = TelegramClient('bot_session_hf_voice', API_ID, API_HASH)
         await client.start(bot_token=TG_BOT_TOKEN)
         
         result_data = None
@@ -113,7 +112,7 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.write(message["content"])
         if "audio" in message:
-            st.audio(message["audio"], format='audio/mp3')
+            st.audio(message["audio"], format='audio/wav')
 
 if prompt := st.chat_input("Type a message..."):
     
@@ -125,42 +124,40 @@ if prompt := st.chat_input("Type a message..."):
         message_placeholder = st.empty()
         full_response = ""
         
-        # Search Run karna
+        # Search Telegram
         search_result = get_movie_data(prompt)
         
-        # --- IDENTITY & GREETING LOGIC ---
+        # --- IDENTITY & PROMPTS ---
         system_prompt = f"""
-        You are AstraToonix, a helpful AI assistant.
+        You are AstraToonix.
+        IDENTITY: Created by '{OWNER_NAME}' (Rajdev) from '{LOCATION}'.
         
-        KEY IDENTITY RULES:
-        1. OWNER: Your creator is '{OWNER_NAME}' (Rajdev).
-        2. LOCATION: You and your owner are from '{LOCATION}'.
-        3. GREETING RULE: If the user says "Hi", "Hello", "Namaste" or similar -> You MUST reply EXACTLY with:
-           "Namaste! Main {OWNER_NAME} ka assistant hoon. Bataiye main aapki kaise madad kar sakta hoon?"
+        GREETING RULE: If user says 'Hi'/'Hello'/'Namaste' -> Reply EXACTLY:
+        "Namaste! Main {OWNER_NAME} ka assistant hoon. Bataiye main aapki kaise madad kar sakta hoon?"
         
         CONTEXT:
         """
 
         if search_result == "CONFIG_ERROR":
-            system_prompt += "\nDatabase Error: API Keys missing. Chat normally."
+            system_prompt += "\nNote: Database Keys missing. Chat normally."
             
         elif search_result and search_result.get("found"):
             system_prompt += f"""
             User asked for '{prompt}'.
-            MOVIE FOUND IN DATABASE:
+            FOUND IN CHANNEL:
             - Link: {search_result['link']}
             - Size: {search_result['size']}
             - Date: {search_result['date']}
             
-            TASK: Inform user clearly. Give details and Link.
+            TASK: Inform user clearly with details and Link.
             """
         else:
             system_prompt += f"""
             User said: '{prompt}'.
-            - If it's a Greeting: Use the 'GREETING RULE' above.
-            - If asking for Code: Write full detailed code (upto 3000 tokens).
-            - If asking for Movie: Apologize politely, say "Currently not available in channel".
-            - If asking 'Who are you/Owner': Answer "{OWNER_NAME} from {LOCATION}".
+            - If Greeting: Follow GREETING RULE.
+            - If Code: Provide detailed code.
+            - If Movie: Say "Sorry, currently not in database."
+            - If Who are you: "{OWNER_NAME} from {LOCATION}".
             """
 
         try:
@@ -168,9 +165,11 @@ if prompt := st.chat_input("Type a message..."):
                 st.error("Hugging Face Token Missing!")
                 st.stop()
 
-            client = InferenceClient(model="Qwen/Qwen2.5-72B-Instruct", token=HF_TOKEN)
+            # 1. Text Generation (Chat)
+            client = InferenceClient(token=HF_TOKEN)
             
             stream = client.chat_completion(
+                model="Qwen/Qwen2.5-72B-Instruct",
                 messages=[{"role": "system", "content": system_prompt}] + [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
                 max_tokens=3000, 
                 stream=True
@@ -183,17 +182,24 @@ if prompt := st.chat_input("Type a message..."):
             
             message_placeholder.markdown(full_response)
             
-            # Voice Logic (Sirf chote messages ke liye)
-            if len(full_response) < 600:
+            # 2. Voice Generation (Hugging Face API - No gTTS)
+            # Hum Hindi/English mix model use karenge: facebook/mms-tts-hin
+            audio_data = None
+            if len(full_response) < 600: # Sirf chhote messages ke liye
                 try:
-                    tts = gTTS(text=full_response, lang="hi", slow=False)
-                    audio_fp = io.BytesIO()
-                    tts.write_to_fp(audio_fp)
-                    autoplay_audio(audio_fp.getvalue())
-                except: pass
+                    # Yahan hum direct HF Inference API use kar rahe hain
+                    # 'facebook/mms-tts-hin' Hindi ke liye best free model hai HF par
+                    audio_bytes = client.text_to_speech(full_response, model="facebook/mms-tts-hin")
+                    
+                    if audio_bytes:
+                        autoplay_audio(audio_bytes)
+                        audio_data = audio_bytes
+                except Exception as e:
+                    # Agar audio fail ho jaye to silent rahe, error na dikhaye
+                    print(f"Audio Error: {e}")
 
-            st.session_state.messages.append({"role": "assistant", "content": full_response})
+            st.session_state.messages.append({"role": "assistant", "content": full_response, "audio": audio_data})
 
         except Exception as e:
             st.error(f"AI Error: {e}")
-            
+        
