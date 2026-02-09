@@ -4,14 +4,47 @@ import base64
 from huggingface_hub import InferenceClient
 from gtts import gTTS
 import io
+import difflib  # Matching ke liye
+
+# --- IMPORT DATABASE ---
+# Agar movies_db.py file nahi milti to error na aaye, isliye try-except
+try:
+    from movies_db import data as movie_database
+except ImportError:
+    movie_database = {}  # Empty agar file na ho
+
+# --- CONFIGURATION ---
+OWNER_NAME = "Rajdev"
+LOCATION = "Lumding, Assam"
+MAIN_CHANNEL_LINK = "https://t.me/+u4cmm3JmIrFlNzZl" 
 
 # --- Page Config ---
-st.set_page_config(page_title="AstraToonix AI", page_icon="🤖")
+st.set_page_config(page_title="AstraToonix", page_icon="🤖")
 
-st.title("🤖 AstraToonix AI Bot")
-st.caption("Auto-Reply with Voice! 🔊")
+st.title("🤖 AstraToonix")
+st.caption(f"Created by {OWNER_NAME}")
 
-# --- Function for Auto-Play Audio ---
+# --- Helper: Search Movie Function ---
+def find_movie_link(user_query):
+    # User ki query ko lowercase karein
+    query_lower = user_query.lower()
+    
+    # 1. Direct check
+    for movie_name, link in movie_database.items():
+        if movie_name in query_lower:
+            return movie_name, link
+            
+    # 2. Fuzzy match (Agar spelling thodi galat ho)
+    # Sirf tab check karein agar database me kuch ho
+    if movie_database:
+        matches = difflib.get_close_matches(query_lower, movie_database.keys(), n=1, cutoff=0.6)
+        if matches:
+            found_name = matches[0]
+            return found_name, movie_database[found_name]
+            
+    return None, None
+
+# --- Audio Function ---
 def autoplay_audio(audio_bytes):
     b64 = base64.b64encode(audio_bytes).decode()
     md = f"""
@@ -24,8 +57,6 @@ def autoplay_audio(audio_bytes):
 # --- Sidebar ---
 with st.sidebar:
     st.header("⚙️ Settings")
-    
-    # Token check
     env_token = os.getenv("HF_TOKEN")
     if env_token:
         hf_token = env_token
@@ -33,91 +64,88 @@ with st.sidebar:
     else:
         hf_token = st.text_input("Hugging Face Token", type="password")
 
-    # --- MODEL LIST ---
-    model_id = st.selectbox(
-        "Choose Model",
-        [
-            "Qwen/Qwen2.5-72B-Instruct",       # Best Choice
-            "microsoft/Phi-3.5-mini-instruct", # Fast Backup
-            "google/gemma-2-2b-it"             # Simple Backup
-        ]
-    )
-    
-    voice_lang = st.selectbox("Voice Language", ["en", "hi"], index=0)
-    
+    model_id = st.selectbox("Choose Model", ["Qwen/Qwen2.5-72B-Instruct", "microsoft/Phi-3.5-mini-instruct"])
+    voice_lang = st.selectbox("Voice Language", ["hi", "en"], index=0)
     if st.button("Clear Chat"):
         st.session_state.messages = []
 
-# --- Memory ---
+# --- Chat Logic ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- Display History ---
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.write(message["content"])
         if "audio" in message:
             st.audio(message["audio"], format='audio/mp3')
 
-# --- Main Logic ---
 if prompt := st.chat_input("Message type karein..."):
-    
     if not hf_token:
-        st.error("Token missing! Please add it in sidebar.")
+        st.error("Token missing!")
         st.stop()
 
-    # 1. User Message
     with st.chat_message("user"):
         st.write(prompt)
     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    # 2. AI Reply
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response = ""
+        
+        # --- SMART CHECK: Database Search ---
+        found_movie, found_link = find_movie_link(prompt)
+        
+        # System Prompt ko Dynamic banate hain
+        if found_movie:
+            # Agar movie mil gayi database mein
+            system_prompt_text = f"""
+            You are AstraToonix. The user asked for '{prompt}'.
+            We FOUND the movie '{found_movie}' in our database.
+            
+            YOUR TASK:
+            1. Tell the user "Haan, {found_movie} hamare paas available hai!"
+            2. Provide this EXACT link: {found_link}
+            3. Say "Click the link above to watch directly."
+            4. Keep it short.
+            """
+        else:
+            # Agar movie database mein nahi hai
+            system_prompt_text = f"""
+            You are AstraToonix created by {OWNER_NAME}.
+            User message: '{prompt}'
+            
+            RULES:
+            1. If user is asking for a movie/series, say: "Filhal ye specific link database me nahi hai, par aap hamare main channel par search kar sakte hain." and give this link: {MAIN_CHANNEL_LINK}
+            2. If user asks general questions (Who are you?), answer as AstraToonix (Creator: {OWNER_NAME}, from {LOCATION}).
+            3. FOR CODING: Write full detailed code.
+            """
 
         try:
             client = InferenceClient(model=model_id, token=hf_token)
-            
-            system_instruction = {
-                "role": "system", 
-                "content": "You are a helpful AI assistant. Keep answers short and natural."
-            }
-            
-            history_messages = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
-            history_for_api = [system_instruction] + history_messages
+            history_for_api = [{"role": "system", "content": system_prompt_text}] + [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages if "audio" not in m]
 
-            stream = client.chat_completion(messages=history_for_api, max_tokens=400, stream=True)
+            stream = client.chat_completion(messages=history_for_api, max_tokens=3000, stream=True)
             
-            # --- FIX IS HERE (Updated Loop) ---
             for chunk in stream:
-                # Hum check kar rahe hain ki 'choices' khali to nahi hai
-                if chunk.choices and len(chunk.choices) > 0:
-                    new_content = chunk.choices[0].delta.content
-                    if new_content:
-                        full_response += new_content
-                        message_placeholder.markdown(full_response + "▌")
+                if chunk.choices and chunk.choices[0].delta.content:
+                    full_response += chunk.choices[0].delta.content
+                    message_placeholder.markdown(full_response + "▌")
             
             message_placeholder.markdown(full_response)
 
-            # 3. Auto-Play Logic
+            # Audio Logic
             audio_data = None
-            if full_response.strip():
+            if full_response.strip() and len(full_response) < 1000:
                 try:
                     tts = gTTS(text=full_response, lang=voice_lang, slow=False)
                     audio_fp = io.BytesIO()
                     tts.write_to_fp(audio_fp)
                     audio_data = audio_fp.getvalue()
                     autoplay_audio(audio_data)
-                    
-                except Exception as e:
-                    print(f"Audio Error: {e}")
+                except: pass
 
-            # 4. Save to Memory
             msg_obj = {"role": "assistant", "content": full_response}
-            if audio_data:
-                msg_obj["audio"] = audio_data
-            
+            if audio_data: msg_obj["audio"] = audio_data
             st.session_state.messages.append(msg_obj)
 
         except Exception as e:
