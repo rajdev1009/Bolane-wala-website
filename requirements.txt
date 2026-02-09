@@ -1,3 +1,5 @@
 streamlit
 huggingface_hub
 gTTS
+telethon
+python-dotenv
