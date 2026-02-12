@@ -1,62 +1,33 @@
 import streamlit as st
-import os
-from huggingface_hub import InferenceClient
 from PIL import Image
 import io
+
+# --- Custom Modules Import ---
+# Humne jo files banayi hain unko yahan import kar rahe hain
+import style
+import bot_logic
+import movies_db
 
 # --- Page Config ---
 st.set_page_config(
     page_title="Rajdev AI Assistant",
     page_icon="🤖",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# --- Styling (Clean Interface) ---
-st.markdown("""
-<style>
-    .stChatInput {position: fixed; bottom: 20px;}
-    .stSpinner {text-align: center; color: #ff4b4b;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-</style>
-""", unsafe_allow_html=True)
+# 1. Check Token (From bot_logic)
+bot_logic.check_token()
 
-# --- Environment Variables ---
-HF_TOKEN = os.environ.get("HF_TOKEN")
-if not HF_TOKEN:
-    st.error("⚠️ HF_TOKEN is missing! Please add it in Koyeb Settings -> Environment Variables.")
-    st.stop()
-
-# --- LATEST 2026 MODELS ---
-# Qwen 2.5 - Best for Hinglish & Chat in 2026
-CHAT_MODEL = "Qwen/Qwen2.5-7B-Instruct"  
-# SDXL - Reliable for Images
-IMAGE_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
-# BLIP - Standard for Vision
-VISION_MODEL = "Salesforce/blip-image-captioning-large"
-
-# --- Clients Setup ---
-client_chat = InferenceClient(model=CHAT_MODEL, token=HF_TOKEN)
-client_image = InferenceClient(model=IMAGE_MODEL, token=HF_TOKEN)
-client_vision = InferenceClient(model=VISION_MODEL, token=HF_TOKEN)
-
-# --- System Prompt (Rajdev's Rules) ---
-SYSTEM_PROMPT = """
-You are "Rajdev AI", a smart assistant created by Rajdev.
-1. Today's Date: 10 February 2026.
-2. Language: Speak in Hinglish (Hindi + English mix).
-3. Creator: If asked "Who made you?", say: "Main Rajdev ka Assistant hoon."
-4. Intro: If user says "Hi", reply: "Bataiye main Rajdev ka assistant hun main aapki kaise madad kar sakta hun."
-5. Movies: If asked for movies, share: https://t.me/+u4cmm3JmIrFlNzZl
-6. Identity: You are NOT a generic AI. You are Rajdev's personal assistant.
-"""
+# 2. Apply Design (From style)
+style.apply_custom_style()
 
 # --- Sidebar ---
 with st.sidebar:
     st.title("👤 Rajdev AI")
     with st.expander("ℹ️ About Owner", expanded=True):
         st.write("Owner: **Rajdev**")
-        st.write("Current Status: **Online (2026)**")
+        st.write("Status: **Online (2026)**")
     
     st.markdown("---")
     st.markdown("### 🎬 Movie Channel")
@@ -64,12 +35,17 @@ with st.sidebar:
     
     st.markdown("---")
     st.write("### 📸 Image Analysis")
-    uploaded_file = st.file_uploader("Upload Image to Analyze:", type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader("Photo Upload Karein:", type=["jpg", "png", "jpeg"])
+    
+    if st.button("🗑️ Clear Chat"):
+        st.session_state.messages = []
+        st.rerun()
 
 # --- Session State ---
 if "messages" not in st.session_state:
+    # System prompt bot_logic se lekar aayenge
     st.session_state.messages = [
-        {"role": "system", "content": SYSTEM_PROMPT}
+        {"role": "system", "content": bot_logic.get_system_prompt()}
     ]
 
 # --- Main Interface ---
@@ -79,68 +55,106 @@ st.title("🤖 Rajdev AI Assistant")
 for message in st.session_state.messages:
     if message["role"] != "system":
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+            # Agar message image hai
+            if isinstance(message["content"], tuple) and message["content"][0] == "image":
+                st.image(message["content"][1], caption=message["content"][2])
+            else:
+                st.markdown(message["content"])
 
-# --- Logic 1: Image Analysis (Vision) ---
+# --- Logic 1: Vision (Image Analysis) ---
 if uploaded_file:
     image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Image", use_column_width=True)
+    st.sidebar.image(image, caption="Preview", use_column_width=True)
     
-    if st.button("🔍 Analyze Image"):
-        with st.spinner("Analyzing..."):
-            try:
-                description = client_vision.image_to_text(image)
-                result_text = f"**Image Analysis:** Is photo mein mujhe yeh dikh raha hai: {description}"
-                st.success("Done!")
-                st.session_state.messages.append({"role": "assistant", "content": result_text})
-                st.rerun() # Refresh to show message
-            except Exception as e:
-                st.error(f"Error analyzing image: {e}")
+    if st.sidebar.button("🔍 Analyze Image"):
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing..."):
+                try:
+                    description = bot_logic.client_vision.image_to_text(image)
+                    result_text = f"**👁️ Image Analysis:** Is photo mein mujhe yeh dikh raha hai: {description}"
+                    st.markdown(result_text)
+                    st.session_state.messages.append({"role": "assistant", "content": result_text})
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
-# --- Logic 2: Chat & Image Gen ---
-if prompt := st.chat_input("Rajdev AI (2026) se kuch bhi puchein..."):
+# --- Logic 2: Chat & Gen AI ---
+if prompt := st.chat_input("Rajdev AI se kuch bhi puchein..."):
     
-    # 1. User Message
+    # User Msg
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 2. Check for Image Generation
-    if any(word in prompt.lower() for word in ["generate image", "create image", "photo banao", "tasveer banao"]):
+    # A. Check for Image Generation Keywords
+    img_triggers = ["generate image", "create image", "photo banao", "tasveer banao", "draw"]
+    
+    if any(word in prompt.lower() for word in img_triggers):
         with st.chat_message("assistant"):
             with st.spinner("🎨 Rajdev AI image bana raha hai..."):
                 try:
-                    image_bytes = client_image.text_to_image(prompt)
+                    image_bytes = bot_logic.client_image.text_to_image(prompt)
                     st.image(image_bytes, caption=f"Generated: {prompt}")
-                    st.session_state.messages.append({"role": "assistant", "content": f"Yeh lijiye aapki photo: '{prompt}'"})
+                    
+                    # Add Download Button Logic
+                    buf = io.BytesIO()
+                    image_bytes.save(buf, format="PNG")
+                    st.download_button(label="⬇️ Download", data=buf.getvalue(), file_name="rajdev_gen.png", mime="image/png")
+                    
+                    # Save to history
+                    st.session_state.messages.append({"role": "assistant", "content": ("image", image_bytes, prompt)})
                 except Exception as e:
                     st.error(f"Image generation failed: {e}")
-    
-    # 3. Normal Chat (Qwen 2.5)
+
+    # B. Check for Movies (from movies_db)
+    elif "movie" in prompt.lower() or "film" in prompt.lower():
+        # Simple check: agar user ne specific movie maangi hai
+        found_movie = False
+        for movie_name, link in movies_db.movie_data.items():
+            if movie_name in prompt.lower():
+                response = f"🎬 **{movie_name.title()}** movie yahan available hai: [Download Link]({link})"
+                with st.chat_message("assistant"):
+                    st.markdown(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                found_movie = True
+                break
+        
+        if not found_movie:
+            # Normal chat fallback if movie not found locally
+            with st.chat_message("assistant"):
+                msg_placeholder = st.empty()
+                full_response = ""
+                try:
+                    stream = bot_logic.client_chat.chat_completion(
+                        messages=st.session_state.messages, max_tokens=512, temperature=0.7, stream=True
+                    )
+                    for chunk in stream:
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            full_response += chunk.choices[0].delta.content
+                            msg_placeholder.markdown(full_response + "▌")
+                    msg_placeholder.markdown(full_response)
+                    st.session_state.messages.append({"role": "assistant", "content": full_response})
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    # C. Normal Chat
     else:
         with st.chat_message("assistant"):
-            message_placeholder = st.empty()
+            msg_placeholder = st.empty()
             full_response = ""
-            
             try:
-                stream = client_chat.chat_completion(
-                    messages=st.session_state.messages,
-                    max_tokens=512,
-                    temperature=0.7,
-                    stream=True
-                )
+                # Send history without images to LLM
+                text_messages = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages if isinstance(m["content"], str)]
                 
+                stream = bot_logic.client_chat.chat_completion(
+                    messages=text_messages, max_tokens=1024, temperature=0.7, stream=True
+                )
                 for chunk in stream:
                     if chunk.choices and chunk.choices[0].delta.content:
-                        content = chunk.choices[0].delta.content
-                        full_response += content
-                        message_placeholder.markdown(full_response + "▌")
+                        full_response += chunk.choices[0].delta.content
+                        msg_placeholder.markdown(full_response + "▌")
                 
-                message_placeholder.markdown(full_response)
+                msg_placeholder.markdown(full_response)
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
-            
             except Exception as e:
-                # Fallback agar Qwen fail ho jaye
                 st.error(f"Connection Error: {e}")
-                st.warning("Trying backup connection...")
                 
